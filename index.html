@@ -53,8 +53,7 @@ body {
   width: 30%;
   height: 30%;
   border-radius: 50%;
-  background: rgba(0, 0, 0, .45);
-  box-shadow: 0 0 0 2px rgba(255, 255, 255, .92);
+  background: rgba(255, 255, 255, 0.45);
   pointer-events: none;
 }
 .pc {
@@ -498,8 +497,11 @@ function canMove() {
 
 function drawBoard() {
   boardEl.innerHTML = '';
-  for (let r = 0; r < 8; r++) {
-    for (let c = 0; c < 8; c++) {
+  const flipped = (roomCode && myColor === 'b');
+  for (let vr = 0; vr < 8; vr++) {
+    for (let vc = 0; vc < 8; vc++) {
+      const r = flipped ? 7 - vr : vr;
+      const c = flipped ? 7 - vc : vc;
       const sq = document.createElement('div');
       sq.className = 'sq ' + ((r + c) % 2 === 0 ? 'l' : 'd');
       sq.dataset.r = r;
@@ -760,8 +762,11 @@ document.addEventListener('mouseup', e => {
 
   const rect = boardEl.getBoundingClientRect();
   const size = rect.width / 8;
-  const c = Math.floor((e.clientX - rect.left) / size);
-  const r = Math.floor((e.clientY - rect.top) / size);
+  const vc = Math.floor((e.clientX - rect.left) / size);
+  const vr = Math.floor((e.clientY - rect.top) / size);
+  const flipped = (roomCode && myColor === 'b');
+  const c = flipped ? 7 - vc : vc;
+  const r = flipped ? 7 - vr : vr;
 
   if (inBounds(r, c)) {
     const move = validMoves.find(m => m.r === r && m.c === c);
