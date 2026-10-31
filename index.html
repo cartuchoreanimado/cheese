@@ -20,8 +20,9 @@ body {
 #board {
   display: grid;
   grid-template-columns: repeat(8, 1fr);
+  grid-template-rows: repeat(8, 1fr);
   width: min(92vw, 520px);
-  height: min(92vw, 520px);
+  aspect-ratio: 1;
   border: 3px solid #1a3a2a;
   box-shadow: 0 10px 40px rgba(0,0,0,.6);
   border-radius: 4px;
@@ -34,6 +35,7 @@ body {
   align-items: center;
   justify-content: center;
   cursor: pointer;
+  overflow: hidden;
 }
 .sq.l { background: #769656; }
 .sq.d { background: #eeeed2; }
@@ -55,9 +57,10 @@ body {
   border-radius: 50%;
 }
 .pc {
-  width: 84%;
-  height: 84%;
+  width: 80%;
+  height: 80%;
   object-fit: contain;
+  object-position: center;
   pointer-events: none;
   filter: drop-shadow(1px 2px 2px rgba(0,0,0,.3));
 }
@@ -89,8 +92,8 @@ button:hover { background: #3a5c48; }
 
 <script>
 const imgs = {
-  K: 'king.png', Q: 'queen.png', R: 'rook.png',
-  B: 'bishop.png', N: 'knight.png', P: 'pawn.png'
+  K: 'rei.png', Q: 'rainha.png', R: 'torre.png',
+  B: 'lado.png', N: 'cavalo.png', P: 'peça.png'
 };
 
 let b = [];
