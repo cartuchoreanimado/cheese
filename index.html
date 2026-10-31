@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Xadrez</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
@@ -74,9 +75,7 @@ body {
 .pc.bk.danger {
   filter: brightness(.25) sepia(1) hue-rotate(-40deg) saturate(8) contrast(1.2) drop-shadow(0 0 4px rgba(180,0,0,.7)) !important;
 }
-.pc.ghost {
-  opacity: .35;
-}
+.pc.ghost { opacity: .35; }
 #ghost {
   position: fixed;
   pointer-events: none;
@@ -102,17 +101,70 @@ button {
   font-size: 14px;
 }
 button:hover { background: #3a5c48; }
+button:disabled {
+  opacity: .5;
+  cursor: not-allowed;
+}
+
+#roomBox {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  z-index: 50;
+}
+#roomBox input {
+  background: #1a2a20;
+  border: 1px solid #3a5c48;
+  color: #eee;
+  padding: 7px 10px;
+  border-radius: 6px;
+  width: 110px;
+  font-size: 13px;
+  outline: none;
+}
+#roomBox input::placeholder { color: #6a8a7a; }
+#roomBox button {
+  padding: 7px 12px;
+  font-size: 13px;
+}
+#status {
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  color: #9ab;
+  font-size: 13px;
+  z-index: 50;
+  max-width: 180px;
+}
 </style>
 </head>
 <body>
+
+<div id="status"></div>
+
+<div id="roomBox">
+  <input id="roomCode" placeholder="senha da sala" maxlength="20">
+  <button id="btnJoin">Entrar</button>
+</div>
+
 <div id="board"></div>
+
 <div id="btns">
   <button id="reset">Reset</button>
   <button id="undo">Undo</button>
 </div>
+
 <img id="ghost" alt="">
 
 <script>
+const SUPABASE_URL = 'https://nttnkskkjxidldxtxssp.supabase.co';
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im50dG5rc2tranhpZGxkeHR4c3NwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTM0ODA5NTUsImV4cCI6MjEwOTA1Njk1NX0.COR8PbVAEc8dbROKFraNjIR8max3t-NmnuIe8vdCV3U';
+
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
 const imgs = {
   K: 'rei.png', Q: 'rainha.png', R: 'torre.png',
   B: 'lado.png', N: 'cavalo.png', P: 'peça.png'
@@ -132,11 +184,24 @@ let dragging = false;
 let dragFrom = null;
 let dragMoved = false;
 
+let myId = localStorage.getItem('chessId') || (Math.random().toString(36).slice(2) + Date.now().toString(36));
+localStorage.setItem('chessId', myId);
+
+let roomCode = null;
+let myColor = null;   // 'w' ou 'b'
+let roomStatus = null; // 'waiting' | 'playing'
+let channel = null;
+
 const boardEl = document.getElementById('board');
 const ghost = document.getElementById('ghost');
+const statusEl = document.getElementById('status');
 
-function startGame() {
-  board = [
+function setStatus(txt) {
+  statusEl.textContent = txt || '';
+}
+
+function initialBoard() {
+  return [
     ['bR','bN','bB','bQ','bK','bB','bN','bR'],
     ['bP','bP','bP','bP','bP','bP','bP','bP'],
     [0,0,0,0,0,0,0,0],
@@ -146,6 +211,10 @@ function startGame() {
     ['wP','wP','wP','wP','wP','wP','wP','wP'],
     ['wR','wN','wB','wQ','wK','wB','wN','wR']
   ];
+}
+
+function startGame() {
+  board = initialBoard();
   turn = 'w';
   selected = null;
   validMoves = [];
@@ -159,6 +228,14 @@ function startGame() {
   dragMoved = false;
   ghost.style.display = 'none';
   drawBoard();
+}
+
+function canMove() {
+  if (roomCode) {
+    if (roomStatus !== 'playing') return false;
+    if (myColor !== turn) return false;
+  }
+  return !gameOver;
 }
 
 function drawBoard() {
@@ -329,7 +406,7 @@ function wouldBeInCheck(fromR, fromC, move, color) {
 }
 
 function onMouseDown(e, r, c) {
-  if (gameOver || e.button !== 0) return;
+  if (!canMove() || e.button !== 0) return;
   const piece = board[r][c];
   if (!isOwn(piece, turn)) return;
 
@@ -359,7 +436,7 @@ function onMouseDown(e, r, c) {
 
 function onClick(e, r, c) {
   if (dragMoved) return;
-  if (gameOver) return;
+  if (!canMove()) return;
 
   const piece = board[r][c];
 
@@ -496,6 +573,8 @@ function makeMove(fromR, fromC, move) {
 
   checkGameOver();
   drawBoard();
+
+  if (roomCode) syncToServer();
 }
 
 function checkGameOver() {
@@ -509,8 +588,139 @@ function checkGameOver() {
   if (!hasLegal) gameOver = true;
 }
 
-document.getElementById('reset').addEventListener('click', startGame);
+async function syncToServer() {
+  if (!roomCode) return;
+  await sb.from('rooms').update({
+    board: board,
+    turn: turn,
+    status: roomStatus,
+    updated_at: new Date().toISOString()
+  }).eq('code', roomCode);
+}
+
+function applyRemoteState(row) {
+  if (!row) return;
+  board = row.board;
+  turn = row.turn;
+  roomStatus = row.status;
+  selected = null;
+  validMoves = [];
+  lastMove = null;
+  gameOver = false;
+  checkGameOver();
+  drawBoard();
+  updateStatusText();
+}
+
+function updateStatusText() {
+  if (!roomCode) {
+    setStatus('');
+    return;
+  }
+  if (roomStatus === 'waiting') {
+    setStatus('Esperando oponente...\nSenha: ' + roomCode);
+  } else if (roomStatus === 'playing') {
+    const cor = myColor === 'w' ? 'Brancas' : 'Pretas';
+    const vez = turn === myColor ? 'Sua vez' : 'Vez do oponente';
+    setStatus(cor + ' · ' + vez);
+  }
+}
+
+async function joinRoom() {
+  const code = document.getElementById('roomCode').value.trim().toLowerCase();
+  if (!code) return;
+
+  if (channel) {
+    await sb.removeChannel(channel);
+    channel = null;
+  }
+
+  const { data: existing } = await sb.from('rooms').select('*').eq('code', code).maybeSingle();
+
+  if (!existing) {
+    // cria sala
+    const { error } = await sb.from('rooms').insert({
+      code,
+      board: initialBoard(),
+      turn: 'w',
+      host: myId,
+      guest: null,
+      status: 'waiting'
+    });
+    if (error) {
+      setStatus('Erro ao criar sala');
+      console.error(error);
+      return;
+    }
+    roomCode = code;
+    myColor = 'w';
+    roomStatus = 'waiting';
+    startGame();
+    setStatus('Esperando oponente...\nSenha: ' + code);
+  } else {
+    if (existing.guest && existing.guest !== myId && existing.host !== myId) {
+      setStatus('Sala cheia (2/2)');
+      return;
+    }
+    if (existing.host === myId) {
+      roomCode = code;
+      myColor = 'w';
+      roomStatus = existing.status;
+      applyRemoteState(existing);
+    } else if (existing.guest === myId) {
+      roomCode = code;
+      myColor = 'b';
+      roomStatus = existing.status;
+      applyRemoteState(existing);
+    } else if (!existing.guest) {
+      // entra como guest
+      const { error } = await sb.from('rooms').update({
+        guest: myId,
+        status: 'playing'
+      }).eq('code', code);
+      if (error) {
+        setStatus('Erro ao entrar');
+        console.error(error);
+        return;
+      }
+      roomCode = code;
+      myColor = 'b';
+      roomStatus = 'playing';
+      applyRemoteState({ ...existing, guest: myId, status: 'playing' });
+    } else {
+      setStatus('Sala cheia');
+      return;
+    }
+  }
+
+  // realtime
+  channel = sb.channel('room-' + code)
+    .on('postgres_changes', {
+      event: '*',
+      schema: 'public',
+      table: 'rooms',
+      filter: 'code=eq.' + code
+    }, payload => {
+      if (payload.new) applyRemoteState(payload.new);
+    })
+    .subscribe();
+
+  document.getElementById('btnJoin').textContent = 'Na sala';
+  document.getElementById('btnJoin').disabled = true;
+  document.getElementById('roomCode').disabled = true;
+}
+
+document.getElementById('btnJoin').addEventListener('click', joinRoom);
+document.getElementById('roomCode').addEventListener('keydown', e => {
+  if (e.key === 'Enter') joinRoom();
+});
+
+document.getElementById('reset').addEventListener('click', () => {
+  if (roomCode) return; // não reseta em online
+  startGame();
+});
 document.getElementById('undo').addEventListener('click', () => {
+  if (roomCode) return;
   if (!history.length) return;
   const prev = history.pop();
   board = prev.board;
