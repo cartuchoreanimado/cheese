@@ -105,7 +105,6 @@ button:disabled {
   opacity: .5;
   cursor: not-allowed;
 }
-
 #roomBox {
   position: fixed;
   top: 12px;
@@ -137,7 +136,9 @@ button:disabled {
   color: #9ab;
   font-size: 13px;
   z-index: 50;
-  max-width: 180px;
+  max-width: 200px;
+  white-space: pre-line;
+  line-height: 1.4;
 }
 </style>
 </head>
@@ -184,13 +185,17 @@ let dragging = false;
 let dragFrom = null;
 let dragMoved = false;
 
-let myId = localStorage.getItem('chessId') || (Math.random().toString(36).slice(2) + Date.now().toString(36));
-localStorage.setItem('chessId', myId);
+let myId = localStorage.getItem('chessId');
+if (!myId) {
+  myId = Math.random().toString(36).slice(2) + Date.now().toString(36);
+  localStorage.setItem('chessId', myId);
+}
 
 let roomCode = null;
-let myColor = null;   // 'w' ou 'b'
-let roomStatus = null; // 'waiting' | 'playing'
+let myColor = null;
+let roomStatus = null;
 let channel = null;
+let pollTimer = null;
 
 const boardEl = document.getElementById('board');
 const ghost = document.getElementById('ghost');
@@ -573,6 +578,7 @@ function makeMove(fromR, fromC, move) {
 
   checkGameOver();
   drawBoard();
+  updateStatusText();
 
   if (roomCode) syncToServer();
 }
@@ -590,19 +596,24 @@ function checkGameOver() {
 
 async function syncToServer() {
   if (!roomCode) return;
-  await sb.from('rooms').update({
+  const { error } = await sb.from('rooms').update({
     board: board,
     turn: turn,
     status: roomStatus,
     updated_at: new Date().toISOString()
   }).eq('code', roomCode);
+  if (error) console.error('sync error', error);
 }
 
 function applyRemoteState(row) {
   if (!row) return;
+
+  const wasWaiting = roomStatus === 'waiting';
+
   board = row.board;
   turn = row.turn;
   roomStatus = row.status;
+
   selected = null;
   validMoves = [];
   lastMove = null;
@@ -610,6 +621,11 @@ function applyRemoteState(row) {
   checkGameOver();
   drawBoard();
   updateStatusText();
+
+  // se acabou de sair do waiting → avisa
+  if (wasWaiting && roomStatus === 'playing') {
+    setStatus('Oponente entrou!\nVocê é Brancas · Sua vez');
+  }
 }
 
 function updateStatusText() {
@@ -621,8 +637,29 @@ function updateStatusText() {
     setStatus('Esperando oponente...\nSenha: ' + roomCode);
   } else if (roomStatus === 'playing') {
     const cor = myColor === 'w' ? 'Brancas' : 'Pretas';
-    const vez = turn === myColor ? 'Sua vez' : 'Vez do oponente';
+    const vez = (turn === myColor) ? 'Sua vez' : 'Vez do oponente';
     setStatus(cor + ' · ' + vez);
+  }
+}
+
+function startPolling() {
+  stopPolling();
+  pollTimer = setInterval(async () => {
+    if (!roomCode) return;
+    const { data } = await sb.from('rooms').select('*').eq('code', roomCode).maybeSingle();
+    if (data) {
+      // só aplica se mudou algo importante
+      if (data.status !== roomStatus || data.turn !== turn || JSON.stringify(data.board) !== JSON.stringify(board)) {
+        applyRemoteState(data);
+      }
+    }
+  }, 1500);
+}
+
+function stopPolling() {
+  if (pollTimer) {
+    clearInterval(pollTimer);
+    pollTimer = null;
   }
 }
 
@@ -630,12 +667,23 @@ async function joinRoom() {
   const code = document.getElementById('roomCode').value.trim().toLowerCase();
   if (!code) return;
 
+  document.getElementById('btnJoin').disabled = true;
+  document.getElementById('btnJoin').textContent = '...';
+
   if (channel) {
     await sb.removeChannel(channel);
     channel = null;
   }
+  stopPolling();
 
-  const { data: existing } = await sb.from('rooms').select('*').eq('code', code).maybeSingle();
+  const { data: existing, error: fetchErr } = await sb.from('rooms').select('*').eq('code', code).maybeSingle();
+  if (fetchErr) {
+    console.error(fetchErr);
+    setStatus('Erro de conexão');
+    document.getElementById('btnJoin').disabled = false;
+    document.getElementById('btnJoin').textContent = 'Entrar';
+    return;
+  }
 
   if (!existing) {
     // cria sala
@@ -648,8 +696,10 @@ async function joinRoom() {
       status: 'waiting'
     });
     if (error) {
-      setStatus('Erro ao criar sala');
       console.error(error);
+      setStatus('Erro ao criar sala');
+      document.getElementById('btnJoin').disabled = false;
+      document.getElementById('btnJoin').textContent = 'Entrar';
       return;
     }
     roomCode = code;
@@ -658,10 +708,7 @@ async function joinRoom() {
     startGame();
     setStatus('Esperando oponente...\nSenha: ' + code);
   } else {
-    if (existing.guest && existing.guest !== myId && existing.host !== myId) {
-      setStatus('Sala cheia (2/2)');
-      return;
-    }
+    // sala já existe
     if (existing.host === myId) {
       roomCode = code;
       myColor = 'w';
@@ -676,37 +723,47 @@ async function joinRoom() {
       // entra como guest
       const { error } = await sb.from('rooms').update({
         guest: myId,
-        status: 'playing'
+        status: 'playing',
+        updated_at: new Date().toISOString()
       }).eq('code', code);
+
       if (error) {
-        setStatus('Erro ao entrar');
         console.error(error);
+        setStatus('Erro ao entrar');
+        document.getElementById('btnJoin').disabled = false;
+        document.getElementById('btnJoin').textContent = 'Entrar';
         return;
       }
       roomCode = code;
       myColor = 'b';
       roomStatus = 'playing';
       applyRemoteState({ ...existing, guest: myId, status: 'playing' });
+      setStatus('Você entrou!\nVocê é Pretas · Vez do oponente');
     } else {
-      setStatus('Sala cheia');
+      setStatus('Sala cheia (2/2)');
+      document.getElementById('btnJoin').disabled = false;
+      document.getElementById('btnJoin').textContent = 'Entrar';
       return;
     }
   }
 
-  // realtime
+  // realtime + polling de backup
   channel = sb.channel('room-' + code)
     .on('postgres_changes', {
       event: '*',
       schema: 'public',
       table: 'rooms',
       filter: 'code=eq.' + code
-    }, payload => {
+    }, (payload) => {
       if (payload.new) applyRemoteState(payload.new);
     })
-    .subscribe();
+    .subscribe((status) => {
+      console.log('realtime status:', status);
+    });
+
+  startPolling();
 
   document.getElementById('btnJoin').textContent = 'Na sala';
-  document.getElementById('btnJoin').disabled = true;
   document.getElementById('roomCode').disabled = true;
 }
 
@@ -716,7 +773,7 @@ document.getElementById('roomCode').addEventListener('keydown', e => {
 });
 
 document.getElementById('reset').addEventListener('click', () => {
-  if (roomCode) return; // não reseta em online
+  if (roomCode) return;
   startGame();
 });
 document.getElementById('undo').addEventListener('click', () => {
