@@ -300,17 +300,23 @@ function getMoves(r, c, ignoreCheck) {
   if (type === 'P') {
     const dir = color === 'w' ? -1 : 1;
     const startRank = color === 'w' ? 6 : 1;
+    // só pra frente, nunca pro lado
     if (inBounds(r + dir, c) && !board[r + dir][c]) {
       result.push({ r: r + dir, c: c });
-      if (r === startRank && !board[r + 2 * dir][c])
+      if (r === startRank && !board[r + 2 * dir][c]) {
         result.push({ r: r + 2 * dir, c: c });
+      }
     }
-    for (let dc = -1; dc <= 1; dc += 2) {
-      const nr = r + dir, nc = c + dc;
-      if (inBounds(nr, nc)) {
-        if (isEnemy(board[nr][nc], color)) result.push({ r: nr, c: nc });
-        if (enPassant && enPassant.r === nr && enPassant.c === nc)
-          result.push({ r: nr, c: nc, enPassant: true });
+    // captura só na diagonal se tiver inimigo
+    for (const dc of [-1, 1]) {
+      const nr = r + dir;
+      const nc = c + dc;
+      if (!inBounds(nr, nc)) continue;
+      const target = board[nr][nc];
+      if (target && target[0] !== color) {
+        result.push({ r: nr, c: nc });
+      } else if (enPassant && enPassant.r === nr && enPassant.c === nc) {
+        result.push({ r: nr, c: nc, enPassant: true });
       }
     }
   } else if (type === 'N') {
@@ -610,7 +616,8 @@ function applyRemoteState(row) {
 
   const wasWaiting = roomStatus === 'waiting';
 
-  board = row.board;
+
+  board = (row.board || []).map(row => row.map(cell => cell || 0));
   turn = row.turn;
   roomStatus = row.status;
 
@@ -622,9 +629,9 @@ function applyRemoteState(row) {
   drawBoard();
   updateStatusText();
 
-  // se acabou de sair do waiting → avisa
+
   if (wasWaiting && roomStatus === 'playing') {
-    setStatus('Oponente entrou!\nVocê é Brancas · Sua vez');
+    setStatus('Uma pessoa se juntou a você\nVocê é Brancas · Sua vez');
   }
 }
 
@@ -648,7 +655,7 @@ function startPolling() {
     if (!roomCode) return;
     const { data } = await sb.from('rooms').select('*').eq('code', roomCode).maybeSingle();
     if (data) {
-      // só aplica se mudou algo importante
+  
       if (data.status !== roomStatus || data.turn !== turn || JSON.stringify(data.board) !== JSON.stringify(board)) {
         applyRemoteState(data);
       }
@@ -686,7 +693,7 @@ async function joinRoom() {
   }
 
   if (!existing) {
-    // cria sala
+
     const { error } = await sb.from('rooms').insert({
       code,
       board: initialBoard(),
@@ -708,7 +715,7 @@ async function joinRoom() {
     startGame();
     setStatus('Esperando oponente...\nSenha: ' + code);
   } else {
-    // sala já existe
+
     if (existing.host === myId) {
       roomCode = code;
       myColor = 'w';
@@ -720,7 +727,7 @@ async function joinRoom() {
       roomStatus = existing.status;
       applyRemoteState(existing);
     } else if (!existing.guest) {
-      // entra como guest
+   
       const { error } = await sb.from('rooms').update({
         guest: myId,
         status: 'playing',
@@ -738,7 +745,7 @@ async function joinRoom() {
       myColor = 'b';
       roomStatus = 'playing';
       applyRemoteState({ ...existing, guest: myId, status: 'playing' });
-      setStatus('Você entrou!\nVocê é Pretas · Vez do oponente');
+      setStatus('Você entrou na sala\nVocê é Pretas · Vez do oponente');
     } else {
       setStatus('Sala cheia (2/2)');
       document.getElementById('btnJoin').disabled = false;
@@ -747,7 +754,7 @@ async function joinRoom() {
     }
   }
 
-  // realtime + polling de backup
+
   channel = sb.channel('room-' + code)
     .on('postgres_changes', {
       event: '*',
