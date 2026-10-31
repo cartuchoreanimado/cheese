@@ -196,7 +196,260 @@ let myColor = null;
 let roomStatus = null;
 let channel = null;
 let pollTimer = null;
+let beatTimer = null;
+let leaving = false;
+let roomHost = null;
+let roomGuest = null;
 
+function startPolling() {
+  stopPolling();
+  pollTimer = setInterval(async () => {
+    if (!roomCode) return;
+    const { data } = await sb.from('rooms').select('*').eq('code', roomCode).maybeSingle();
+    if (!data) {
+      roomGone();
+      return;
+    }
+    if (data.status !== roomStatus || data.turn !== turn || JSON.stringify(data.board) !== JSON.stringify(board) || data.host !== (roomHost) || data.guest !== (roomGuest)) {
+      applyRemoteState(data);
+    }
+  }, 1500);
+}
+
+function stopPolling() {
+  if (pollTimer) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
+  if (beatTimer) {
+    clearInterval(beatTimer);
+    beatTimer = null;
+  }
+}
+
+function startBeat() {
+  if (beatTimer) clearInterval(beatTimer);
+  const tick = () => {
+    if (!roomCode || leaving) return;
+    sb.from('rooms').update({ updated_at: new Date().toISOString() }).eq('code', roomCode);
+  };
+  tick();
+  beatTimer = setInterval(tick, 4000);
+}
+
+function roomGone() {
+  stopPolling();
+  if (channel) {
+    sb.removeChannel(channel);
+    channel = null;
+  }
+  roomCode = null;
+  myColor = null;
+  roomStatus = null;
+  selected = null;
+  validMoves = [];
+  const btn = document.getElementById('btnJoin');
+  const input = document.getElementById('roomCode');
+  if (btn) {
+    btn.disabled = false;
+    btn.textContent = 'Entrar';
+  }
+  if (input) input.disabled = false;
+  setStatus('');
+  drawBoard();
+}
+
+function leaveNow() {
+  if (!roomCode || leaving) return;
+  leaving = true;
+  const code = roomCode;
+  const id = myId;
+  const mine = myColor === 'b' ? 'guest' : 'host';
+  const headers = {
+    apikey: SUPABASE_KEY,
+    Authorization: 'Bearer ' + SUPABASE_KEY,
+    'Content-Type': 'application/json',
+    Prefer: 'return=minimal'
+  };
+  const patchUrl = SUPABASE_URL + '/rest/v1/rooms?code=eq.' + encodeURIComponent(code) + '&' + mine + '=eq.' + encodeURIComponent(id);
+  fetch(patchUrl, {
+    method: 'PATCH',
+    keepalive: true,
+    headers,
+    body: JSON.stringify({
+      [mine]: null,
+      status: 'waiting',
+      updated_at: new Date().toISOString()
+    })
+  }).then(() => fetch(
+    SUPABASE_URL + '/rest/v1/rooms?code=eq.' + encodeURIComponent(code) + '&host=is.null&guest=is.null',
+    { method: 'DELETE', keepalive: true, headers }
+  ));
+}
+
+function sweepRooms() {
+  const cut = new Date(Date.now() - 18000).toISOString();
+  sb.from('rooms').delete().lt('updated_at', cut);
+  sb.from('rooms').delete().is('host', null).is('guest', null);
+}
+
+async function joinRoom() {
+  const code = document.getElementById('roomCode').value.trim().toLowerCase();
+  if (!code) return;
+
+  document.getElementById('btnJoin').disabled = true;
+  document.getElementById('btnJoin').textContent = '...';
+
+  if (channel) {
+    await sb.removeChannel(channel);
+    channel = null;
+  }
+  stopPolling();
+  leaving = false;
+
+  let { data: existing, error: fetchErr } = await sb.from('rooms').select('*').eq('code', code).maybeSingle();
+  if (fetchErr) {
+    setStatus('Erro de conexão');
+    document.getElementById('btnJoin').disabled = false;
+    document.getElementById('btnJoin').textContent = 'Entrar';
+    return;
+  }
+
+  if (existing) {
+    const age = Date.now() - new Date(existing.updated_at || 0).getTime();
+    if ((!existing.host && !existing.guest) || age > 18000) {
+      await sb.from('rooms').delete().eq('code', code);
+      existing = null;
+    }
+  }
+
+  if (!existing) {
+    const { error } = await sb.from('rooms').insert({
+      code,
+      board: initialBoard(),
+      turn: 'w',
+      host: myId,
+      guest: null,
+      status: 'waiting',
+      updated_at: new Date().toISOString()
+    });
+    if (error) {
+      setStatus('Erro ao criar sala');
+      document.getElementById('btnJoin').disabled = false;
+      document.getElementById('btnJoin').textContent = 'Entrar';
+      return;
+    }
+    roomCode = code;
+    myColor = 'w';
+    roomStatus = 'waiting';
+    startGame();
+    setStatus('Esperando oponente...\nSenha: ' + code);
+  } else if (existing.host === myId) {
+    roomCode = code;
+    myColor = 'w';
+    roomStatus = existing.status;
+    applyRemoteState(existing);
+  } else if (existing.guest === myId) {
+    roomCode = code;
+    myColor = 'b';
+    roomStatus = existing.status;
+    applyRemoteState(existing);
+  } else if (!existing.host) {
+    const playing = !!existing.guest;
+    const { error } = await sb.from('rooms').update({
+      host: myId,
+      status: playing ? 'playing' : 'waiting',
+      updated_at: new Date().toISOString()
+    }).eq('code', code);
+    if (error) {
+      setStatus('Erro ao entrar');
+      document.getElementById('btnJoin').disabled = false;
+      document.getElementById('btnJoin').textContent = 'Entrar';
+      return;
+    }
+    roomCode = code;
+    myColor = 'w';
+    roomStatus = playing ? 'playing' : 'waiting';
+    applyRemoteState({ ...existing, host: myId, status: roomStatus });
+    if (playing) setStatus('Você entrou na sala\nVocê é Brancas · ' + (turn === 'w' ? 'Sua vez' : 'Vez do oponente'));
+    else setStatus('Esperando oponente...\nSenha: ' + code);
+  } else if (!existing.guest) {
+    const { error } = await sb.from('rooms').update({
+      guest: myId,
+      status: 'playing',
+      updated_at: new Date().toISOString()
+    }).eq('code', code);
+    if (error) {
+      setStatus('Erro ao entrar');
+      document.getElementById('btnJoin').disabled = false;
+      document.getElementById('btnJoin').textContent = 'Entrar';
+      return;
+    }
+    roomCode = code;
+    myColor = 'b';
+    roomStatus = 'playing';
+    applyRemoteState({ ...existing, guest: myId, status: 'playing' });
+    setStatus('Você entrou na sala\nVocê é Pretas · Vez do oponente');
+  } else {
+    setStatus('Sala cheia (2/2)');
+    document.getElementById('btnJoin').disabled = false;
+    document.getElementById('btnJoin').textContent = 'Entrar';
+    return;
+  }
+
+  channel = sb.channel('room-' + code)
+    .on('postgres_changes', {
+      event: '*',
+      schema: 'public',
+      table: 'rooms',
+      filter: 'code=eq.' + code
+    }, (payload) => {
+      if (!payload.new || payload.eventType === 'DELETE') {
+        roomGone();
+        return;
+      }
+      applyRemoteState(payload.new);
+    })
+    .subscribe();
+
+  startPolling();
+  startBeat();
+
+  document.getElementById('btnJoin').textContent = 'Na sala';
+  document.getElementById('roomCode').disabled = true;
+}
+
+document.getElementById('btnJoin').addEventListener('click', joinRoom);
+document.getElementById('roomCode').addEventListener('keydown', e => {
+  if (e.key === 'Enter') joinRoom();
+});
+
+window.addEventListener('pagehide', leaveNow);
+window.addEventListener('beforeunload', leaveNow);
+
+document.getElementById('reset').addEventListener('click', () => {
+  if (roomCode) return;
+  startGame();
+});
+document.getElementById('undo').addEventListener('click', () => {
+  if (roomCode) return;
+  if (!history.length) return;
+  const prev = history.pop();
+  board = prev.board;
+  turn = prev.turn;
+  enPassant = prev.enPassant;
+  castling = prev.castling;
+  lastMove = prev.lastMove;
+  selected = null;
+  validMoves = [];
+  gameOver = false;
+  dragging = false;
+  ghost.style.display = 'none';
+  drawBoard();
+});
+
+setInterval(sweepRooms, 8000);
+sweepRooms();
 const boardEl = document.getElementById('board');
 const ghost = document.getElementById('ghost');
 const statusEl = document.getElementById('status');
@@ -300,14 +553,12 @@ function getMoves(r, c, ignoreCheck) {
   if (type === 'P') {
     const dir = color === 'w' ? -1 : 1;
     const startRank = color === 'w' ? 6 : 1;
-    // só pra frente, nunca pro lado
     if (inBounds(r + dir, c) && !board[r + dir][c]) {
       result.push({ r: r + dir, c: c });
       if (r === startRank && !board[r + 2 * dir][c]) {
         result.push({ r: r + 2 * dir, c: c });
       }
     }
-    // captura só na diagonal se tiver inimigo
     for (const dc of [-1, 1]) {
       const nr = r + dir;
       const nc = c + dc;
@@ -616,10 +867,11 @@ function applyRemoteState(row) {
 
   const wasWaiting = roomStatus === 'waiting';
 
-
-  board = (row.board || []).map(row => row.map(cell => cell || 0));
+  board = (row.board || []).map(line => line.map(cell => cell || 0));
   turn = row.turn;
   roomStatus = row.status;
+  roomHost = row.host || null;
+  roomGuest = row.guest || null;
 
   selected = null;
   validMoves = [];
@@ -629,9 +881,10 @@ function applyRemoteState(row) {
   drawBoard();
   updateStatusText();
 
-
   if (wasWaiting && roomStatus === 'playing') {
-    setStatus('Uma pessoa se juntou a você\nVocê é Brancas · Sua vez');
+    const cor = myColor === 'w' ? 'Brancas' : 'Pretas';
+    const vez = turn === myColor ? 'Sua vez' : 'Vez do oponente';
+    setStatus('Uma pessoa se juntou a você\nVocê é ' + cor + ' · ' + vez);
   }
 }
 
@@ -648,157 +901,6 @@ function updateStatusText() {
     setStatus(cor + ' · ' + vez);
   }
 }
-
-function startPolling() {
-  stopPolling();
-  pollTimer = setInterval(async () => {
-    if (!roomCode) return;
-    const { data } = await sb.from('rooms').select('*').eq('code', roomCode).maybeSingle();
-    if (data) {
-  
-      if (data.status !== roomStatus || data.turn !== turn || JSON.stringify(data.board) !== JSON.stringify(board)) {
-        applyRemoteState(data);
-      }
-    }
-  }, 1500);
-}
-
-function stopPolling() {
-  if (pollTimer) {
-    clearInterval(pollTimer);
-    pollTimer = null;
-  }
-}
-
-async function joinRoom() {
-  const code = document.getElementById('roomCode').value.trim().toLowerCase();
-  if (!code) return;
-
-  document.getElementById('btnJoin').disabled = true;
-  document.getElementById('btnJoin').textContent = '...';
-
-  if (channel) {
-    await sb.removeChannel(channel);
-    channel = null;
-  }
-  stopPolling();
-
-  const { data: existing, error: fetchErr } = await sb.from('rooms').select('*').eq('code', code).maybeSingle();
-  if (fetchErr) {
-    console.error(fetchErr);
-    setStatus('Erro de conexão');
-    document.getElementById('btnJoin').disabled = false;
-    document.getElementById('btnJoin').textContent = 'Entrar';
-    return;
-  }
-
-  if (!existing) {
-
-    const { error } = await sb.from('rooms').insert({
-      code,
-      board: initialBoard(),
-      turn: 'w',
-      host: myId,
-      guest: null,
-      status: 'waiting'
-    });
-    if (error) {
-      console.error(error);
-      setStatus('Erro ao criar sala');
-      document.getElementById('btnJoin').disabled = false;
-      document.getElementById('btnJoin').textContent = 'Entrar';
-      return;
-    }
-    roomCode = code;
-    myColor = 'w';
-    roomStatus = 'waiting';
-    startGame();
-    setStatus('Esperando oponente...\nSenha: ' + code);
-  } else {
-
-    if (existing.host === myId) {
-      roomCode = code;
-      myColor = 'w';
-      roomStatus = existing.status;
-      applyRemoteState(existing);
-    } else if (existing.guest === myId) {
-      roomCode = code;
-      myColor = 'b';
-      roomStatus = existing.status;
-      applyRemoteState(existing);
-    } else if (!existing.guest) {
-   
-      const { error } = await sb.from('rooms').update({
-        guest: myId,
-        status: 'playing',
-        updated_at: new Date().toISOString()
-      }).eq('code', code);
-
-      if (error) {
-        console.error(error);
-        setStatus('Erro ao entrar');
-        document.getElementById('btnJoin').disabled = false;
-        document.getElementById('btnJoin').textContent = 'Entrar';
-        return;
-      }
-      roomCode = code;
-      myColor = 'b';
-      roomStatus = 'playing';
-      applyRemoteState({ ...existing, guest: myId, status: 'playing' });
-      setStatus('Você entrou na sala\nVocê é Pretas · Vez do oponente');
-    } else {
-      setStatus('Sala cheia (2/2)');
-      document.getElementById('btnJoin').disabled = false;
-      document.getElementById('btnJoin').textContent = 'Entrar';
-      return;
-    }
-  }
-
-
-  channel = sb.channel('room-' + code)
-    .on('postgres_changes', {
-      event: '*',
-      schema: 'public',
-      table: 'rooms',
-      filter: 'code=eq.' + code
-    }, (payload) => {
-      if (payload.new) applyRemoteState(payload.new);
-    })
-    .subscribe((status) => {
-      console.log('realtime status:', status);
-    });
-
-  startPolling();
-
-  document.getElementById('btnJoin').textContent = 'Na sala';
-  document.getElementById('roomCode').disabled = true;
-}
-
-document.getElementById('btnJoin').addEventListener('click', joinRoom);
-document.getElementById('roomCode').addEventListener('keydown', e => {
-  if (e.key === 'Enter') joinRoom();
-});
-
-document.getElementById('reset').addEventListener('click', () => {
-  if (roomCode) return;
-  startGame();
-});
-document.getElementById('undo').addEventListener('click', () => {
-  if (roomCode) return;
-  if (!history.length) return;
-  const prev = history.pop();
-  board = prev.board;
-  turn = prev.turn;
-  enPassant = prev.enPassant;
-  castling = prev.castling;
-  lastMove = prev.lastMove;
-  selected = null;
-  validMoves = [];
-  gameOver = false;
-  dragging = false;
-  ghost.style.display = 'none';
-  drawBoard();
-});
 
 startGame();
 </script>
