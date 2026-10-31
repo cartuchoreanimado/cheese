@@ -53,8 +53,8 @@ body {
   width: 30%;
   height: 30%;
   border-radius: 50%;
-  background: rgba(255,255,255,.75);
-  box-shadow: 0 0 4px rgba(0,0,0,.3);
+  background: rgba(0, 0, 0, .45);
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, .92);
   pointer-events: none;
 }
 .pc {
@@ -510,10 +510,10 @@ function drawBoard() {
         sq.classList.add('lm');
 
       const move = validMoves.find(m => m.r === r && m.c === c);
-      if (move && !board[r][c]) sq.classList.add('vm');
+      if (move && emptySq(board[r][c])) sq.classList.add('vm');
 
       const piece = board[r][c];
-      if (piece) {
+      if (piece && piece[1] && imgs[piece[1]]) {
         const img = document.createElement('img');
         img.src = imgs[piece[1]];
         img.className = 'pc' + (piece[0] === 'b' ? ' bk' : '');
@@ -532,8 +532,9 @@ function drawBoard() {
 }
 
 function inBounds(r, c) { return r >= 0 && r < 8 && c >= 0 && c < 8; }
-function isEnemy(p, col) { return p && p[0] !== col; }
-function isOwn(p, col) { return p && p[0] === col; }
+function emptySq(p) { return !p || p === '0'; }
+function isEnemy(p, col) { return p && p !== '0' && p[0] !== col && p[1]; }
+function isOwn(p, col) { return p && p !== '0' && p[0] === col && p[1]; }
 function cloneBoard(src) { return src.map(row => row.slice()); }
 
 function getMoves(r, c, ignoreCheck) {
@@ -553,9 +554,9 @@ function getMoves(r, c, ignoreCheck) {
   if (type === 'P') {
     const dir = color === 'w' ? -1 : 1;
     const startRank = color === 'w' ? 6 : 1;
-    if (inBounds(r + dir, c) && !board[r + dir][c]) {
+    if (inBounds(r + dir, c) && emptySq(board[r + dir][c])) {
       result.push({ r: r + dir, c: c });
-      if (r === startRank && !board[r + 2 * dir][c]) {
+      if (r === startRank && emptySq(board[r + 2 * dir][c])) {
         result.push({ r: r + 2 * dir, c: c });
       }
     }
@@ -564,10 +565,13 @@ function getMoves(r, c, ignoreCheck) {
       const nc = c + dc;
       if (!inBounds(nr, nc)) continue;
       const target = board[nr][nc];
-      if (target && target[0] !== color) {
+      if (target && target[0] !== color && target[1]) {
         result.push({ r: nr, c: nc });
       } else if (enPassant && enPassant.r === nr && enPassant.c === nc) {
-        result.push({ r: nr, c: nc, enPassant: true });
+        const beside = board[r][nc];
+        if (beside && beside[0] !== color && beside[1] === 'P') {
+          result.push({ r: nr, c: nc, enPassant: true });
+        }
       }
     }
   } else if (type === 'N') {
