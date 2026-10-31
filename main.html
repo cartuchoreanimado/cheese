@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Xadrez</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: #111;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  gap: 16px;
+  font-family: system-ui, sans-serif;
+}
+#board {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  width: min(92vw, 520px);
+  height: min(92vw, 520px);
+  border: 3px solid #1a3a2a;
+  box-shadow: 0 10px 40px rgba(0,0,0,.6);
+  border-radius: 4px;
+  overflow: hidden;
+  user-select: none;
+}
+.sq {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.sq.l { background: #769656; }
+.sq.d { background: #eeeed2; }
+.sq.sel { outline: 3px solid #f0c040; outline-offset: -3px; z-index: 2; }
+.sq.lm { background: #baca44 !important; }
+.sq.vm::after {
+  content: '';
+  position: absolute;
+  width: 26%;
+  height: 26%;
+  border-radius: 50%;
+  background: rgba(0,0,0,.28);
+}
+.sq.vc::after {
+  content: '';
+  position: absolute;
+  inset: 7%;
+  border: 4px solid rgba(200,40,40,.75);
+  border-radius: 50%;
+}
+.pc {
+  width: 84%;
+  height: 84%;
+  object-fit: contain;
+  pointer-events: none;
+  filter: drop-shadow(1px 2px 2px rgba(0,0,0,.3));
+}
+.pc.bk {
+  filter: brightness(.2) contrast(1.15) drop-shadow(1px 2px 2px rgba(0,0,0,.45));
+}
+#btns {
+  display: flex;
+  gap: 10px;
+}
+button {
+  background: #2e4a3a;
+  color: #ddd;
+  border: none;
+  padding: 9px 16px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+}
+button:hover { background: #3a5c48; }
+</style>
+</head>
+<body>
+<div id="board"></div>
+<div id="btns">
+  <button id="reset">Reset</button>
+  <button id="undo">Undo</button>
+</div>
+
+<script>
+const imgs = {
+  K: 'king.png', Q: 'queen.png', R: 'rook.png',
+  B: 'bishop.png', N: 'knight.png', P: 'pawn.png'
+};
+
+let b = [];
+let turn = 'w';
+let sel = null;
+let moves = [];
+let last = null;
+let hist = [];
+let over = false;
+let ep = null;
+let castle = { wK:1, wQ:1, bK:1, bQ:1 };
+
+const el = document.getElementById('board');
+
+function start() {
+  b = [
+    ['bR','bN','bB','bQ','bK','bB','bN','bR'],
+    ['bP','bP','bP','bP','bP','bP','bP','bP'],
+    [0,0,0,0,0,0,0,0],
+    [0,0,0,0,0,0,0,0],
+    [0,0,0,0,0,0,0,0],
+    [0,0,0,0,0,0,0,0],
+    ['wP','wP','wP','wP','wP','wP','wP','wP'],
+    ['wR','wN','wB','wQ','wK','wB','wN','wR']
+  ];
+  turn = 'w';
+  sel = null;
+  moves = [];
+  last = null;
+  hist = [];
+  over = false;
+  ep = null;
+  castle = { wK:1, wQ:1, bK:1, bQ:1 };
+  draw();
+}
+
+function draw() {
+  el.innerHTML = '';
+  for (let r = 0; r < 8; r++) {
+    for (let c = 0; c < 8; c++) {
+      const s = document.createElement('div');
+      s.className = 'sq ' + ((r + c) % 2 ? 'd' : 'l');
+      s.dataset.r = r;
+      s.dataset.c = c;
+
+      if (sel && sel.r === r && sel.c === c) s.classList.add('sel');
+      if (last && ((last.f.r === r && last.f.c === c) || (last.t.r === r && last.t.c === c)))
+        s.classList.add('lm');
+
+      const ok = moves.find(m => m.r === r && m.c === c);
+      if (ok) s.classList.add(b[r][c] ? 'vc' : 'vm');
+
+      const p = b[r][c];
+      if (p) {
+        const img = document.createElement('img');
+        img.src = imgs[p[1]];
+        img.className = 'pc' + (p[0] === 'b' ? ' bk' : '');
+        img.alt = p;
+        s.appendChild(img);
+      }
+
+      s.onclick = () => click(r, c);
+      el.appendChild(s);
+    }
+  }
+}
+
+function ok(r, c) { return r >= 0 && r < 8 && c >= 0 && c < 8; }
+function enemy(p, col) { return p && p[0] !== col; }
+function mine(p, col) { return p && p[0] === col; }
+function copy(x) { return x.map(row => row.slice()); }
+
+function gen(r, c, quiet) {
+  const p = b[r][c];
+  if (!p) return [];
+  const col = p[0], t = p[1], res = [];
+
+  const push = (nr, nc) => {
+    if (!ok(nr, nc)) return false;
+    if (mine(b[nr][nc], col)) return false;
+    res.push({ r: nr, c: nc });
+    return !b[nr][nc];
+  };
+
+  if (t === 'P') {
+    const d = col === 'w' ? -1 : 1;
+    const start = col === 'w' ? 6 : 1;
+    if (ok(r + d, c) && !b[r + d][c]) {
+      res.push({ r: r + d, c });
+      if (r === start && !b[r + 2 * d][c]) res.push({ r: r + 2 * d, c });
+    }
+    for (const dc of [-1, 1]) {
+      const nr = r + d, nc = c + dc;
+      if (ok(nr, nc)) {
+        if (enemy(b[nr][nc], col)) res.push({ r: nr, c: nc });
+        if (ep && ep.r === nr && ep.c === nc) res.push({ r: nr, c: nc, ep: 1 });
+      }
+    }
+  }
+  else if (t === 'N') {
+    [[-2,-1],[-2,1],[-1,-2],[-1,2],[1,-2],[1,2],[2,-1],[2,1]].forEach(([dr,dc]) => push(r+dr, c+dc));
+  }
+  else if (t === 'B' || t === 'Q' || t === 'R') {
+    const dirs = [];
+    if (t !== 'R') dirs.push([-1,-1],[-1,1],[1,-1],[1,1]);
+    if (t !== 'B') dirs.push([-1,0],[1,0],[0,-1],[0,1]);
+    dirs.forEach(([dr,dc]) => {
+      for (let i = 1; i < 8; i++) if (!push(r + dr*i, c + dc*i)) break;
+    });
+  }
+  else if (t === 'K') {
+    for (let dr = -1; dr <= 1; dr++)
+      for (let dc = -1; dc <= 1; dc++)
+        if (dr || dc) push(r+dr, c+dc);
+
+    if (!quiet) {
+      if (col === 'w' && r === 7 && c === 4) {
+        if (castle.wK && !b[7][5] && !b[7][6] && b[7][7] === 'wR' &&
+            !hit(7,4,'b') && !hit(7,5,'b') && !hit(7,6,'b'))
+          res.push({ r:7, c:6, cas:'K' });
+        if (castle.wQ && !b[7][3] && !b[7][2] && !b[7][1] && b[7][0] === 'wR' &&
+            !hit(7,4,'b') && !hit(7,3,'b') && !hit(7,2,'b'))
+          res.push({ r:7, c:2, cas:'Q' });
+      }
+      if (col === 'b' && r === 0 && c === 4) {
+        if (castle.bK && !b[0][5] && !b[0][6] && b[0][7] === 'bR' &&
+            !hit(0,4,'w') && !hit(0,5,'w') && !hit(0,6,'w'))
+          res.push({ r:0, c:6, cas:'K' });
+        if (castle.bQ && !b[0][3] && !b[0][2] && !b[0][1] && b[0][0] === 'bR' &&
+            !hit(0,4,'w') && !hit(0,3,'w') && !hit(0,2,'w'))
+          res.push({ r:0, c:2, cas:'Q' });
+      }
+    }
+  }
+
+  if (!quiet) return res.filter(m => !check(r, c, m, col));
+  return res;
+}
+
+function hit(r, c, by) {
+  for (let i = 0; i < 8; i++)
+    for (let j = 0; j < 8; j++)
+      if (b[i][j] && b[i][j][0] === by)
+        if (gen(i, j, 1).some(m => m.r === r && m.c === c)) return 1;
+  return 0;
+}
+
+function king(col) {
+  for (let r = 0; r < 8; r++)
+    for (let c = 0; c < 8; c++)
+      if (b[r][c] === col + 'K') return { r, c };
+  return null;
+}
+
+function check(fr, fc, m, col) {
+  const saved = b[m.r][m.c];
+  const piece = b[fr][fc];
+  b[m.r][m.c] = piece;
+  b[fr][fc] = 0;
+
+  let epCap = null;
+  if (m.ep) {
+    const d = col === 'w' ? 1 : -1;
+    epCap = b[m.r + d][m.c];
+    b[m.r + d][m.c] = 0;
+  }
+
+  let rf, rt, rp;
+  if (m.cas) {
+    rf = { r: fr, c: m.cas === 'K' ? 7 : 0 };
+    rt = { r: fr, c: m.cas === 'K' ? 5 : 3 };
+    rp = b[rf.r][rf.c];
+    b[rt.r][rt.c] = rp;
+    b[rf.r][rf.c] = 0;
+  }
+
+  const k = king(col);
+  const bad = k && hit(k.r, k.c, col === 'w' ? 'b' : 'w');
+
+  b[fr][fc] = piece;
+  b[m.r][m.c] = saved;
+  if (epCap) b[m.r + (col === 'w' ? 1 : -1)][m.c] = epCap;
+  if (rf) { b[rf.r][rf.c] = rp; b[rt.r][rt.c] = 0; }
+
+  return bad;
+}
+
+function click(r, c) {
+  if (over) return;
+  const p = b[r][c];
+
+  if (sel) {
+    const m = moves.find(x => x.r === r && x.c === c);
+    if (m) { doMove(sel.r, sel.c, m); return; }
+    if (sel.r === r && sel.c === c) { sel = null; moves = []; draw(); return; }
+    if (mine(p, turn)) { sel = { r, c }; moves = gen(r, c); draw(); return; }
+    sel = null; moves = []; draw(); return;
+  }
+
+  if (mine(p, turn)) {
+    sel = { r, c };
+    moves = gen(r, c);
+    draw();
+  }
+}
+
+function doMove(fr, fc, m) {
+  hist.push({
+    b: copy(b), turn, ep: ep ? {...ep} : null,
+    castle: {...castle}, last: last ? { f:{...last.f}, t:{...last.t} } : null
+  });
+
+  const piece = b[fr][fc];
+  const col = piece[0], t = piece[1];
+
+  if (m.ep) {
+    const d = col === 'w' ? 1 : -1;
+    b[m.r + d][m.c] = 0;
+  }
+
+  b[m.r][m.c] = piece;
+  b[fr][fc] = 0;
+
+  if (m.cas) {
+    if (m.cas === 'K') { b[fr][5] = b[fr][7]; b[fr][7] = 0; }
+    else { b[fr][3] = b[fr][0]; b[fr][0] = 0; }
+  }
+
+  if (t === 'K') {
+    if (col === 'w') { castle.wK = 0; castle.wQ = 0; }
+    else { castle.bK = 0; castle.bQ = 0; }
+  }
+  if (t === 'R') {
+    if (fr === 7 && fc === 0) castle.wQ = 0;
+    if (fr === 7 && fc === 7) castle.wK = 0;
+    if (fr === 0 && fc === 0) castle.bQ = 0;
+    if (fr === 0 && fc === 7) castle.bK = 0;
+  }
+  if (m.r === 7 && m.c === 0) castle.wQ = 0;
+  if (m.r === 7 && m.c === 7) castle.wK = 0;
+  if (m.r === 0 && m.c === 0) castle.bQ = 0;
+  if (m.r === 0 && m.c === 7) castle.bK = 0;
+
+  ep = null;
+  if (t === 'P' && Math.abs(m.r - fr) === 2)
+    ep = { r: (fr + m.r) / 2, c: fc };
+
+  if (t === 'P' && (m.r === 0 || m.r === 7))
+    b[m.r][m.c] = col + 'Q';
+
+  last = { f: { r: fr, c: fc }, t: { r: m.r, c: m.c } };
+  sel = null;
+  moves = [];
+  turn = turn === 'w' ? 'b' : 'w';
+
+  status();
+  draw();
+}
+
+function status() {
+  const k = king(turn);
+  if (!k) { over = 1; return; }
+
+  const inCheck = hit(k.r, k.c, turn === 'w' ? 'b' : 'w');
+  let has = 0;
+  for (let r = 0; r < 8 && !has; r++)
+    for (let c = 0; c < 8 && !has; c++)
+      if (mine(b[r][c], turn) && gen(r, c).length) has = 1;
+
+  if (!has) over = 1;
+}
+
+document.getElementById('reset').onclick = start;
+document.getElementById('undo').onclick = () => {
+  if (!hist.length) return;
+  const p = hist.pop();
+  b = p.b;
+  turn = p.turn;
+  ep = p.ep;
+  castle = p.castle;
+  last = p.last;
+  sel = null;
+  moves = [];
+  over = false;
+  draw();
+};
+
+start();
+</script>
+</body>
+</html>
