@@ -6,7 +6,6 @@
 <title>Xadrez</title>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
-
 body {
   background: #111;
   min-height: 100vh;
@@ -18,7 +17,6 @@ body {
   gap: 16px;
   font-family: system-ui, sans-serif;
 }
-
 #board {
   display: grid;
   grid-template-columns: repeat(8, 1fr);
@@ -30,8 +28,8 @@ body {
   border-radius: 4px;
   overflow: hidden;
   user-select: none;
+  position: relative;
 }
-
 .sq {
   position: relative;
   display: flex;
@@ -40,43 +38,24 @@ body {
   cursor: pointer;
   overflow: hidden;
 }
-
 .sq.l { background: #769656; }
 .sq.d { background: #eeeed2; }
-
 .sq.sel {
   outline: 3px solid #f0c040;
   outline-offset: -3px;
   z-index: 2;
 }
-
-.sq.lm {
-  background: #baca44 !important;
-}
-
-/* círculo branco de movimento válido */
+.sq.lm { background: #baca44 !important; }
 .sq.vm::after {
   content: '';
   position: absolute;
   width: 30%;
   height: 30%;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.75);
+  background: rgba(255,255,255,.75);
   box-shadow: 0 0 4px rgba(0,0,0,.3);
   pointer-events: none;
 }
-
-/* círculo de captura */
-.sq.vc::after {
-  content: '';
-  position: absolute;
-  inset: 6%;
-  border: 5px solid rgba(255, 255, 255, 0.8);
-  border-radius: 50%;
-  box-shadow: 0 0 4px rgba(0,0,0,.3);
-  pointer-events: none;
-}
-
 .pc {
   width: 80%;
   height: 80%;
@@ -84,17 +63,35 @@ body {
   object-position: center;
   pointer-events: none;
   filter: drop-shadow(1px 2px 2px rgba(0,0,0,.3));
+  transition: filter .12s;
 }
-
 .pc.bk {
   filter: brightness(.2) contrast(1.15) drop-shadow(1px 2px 2px rgba(0,0,0,.45));
 }
-
+.pc.danger {
+  filter: brightness(.85) sepia(1) hue-rotate(-50deg) saturate(6) drop-shadow(0 0 4px rgba(200,0,0,.6)) !important;
+}
+.pc.bk.danger {
+  filter: brightness(.25) sepia(1) hue-rotate(-40deg) saturate(8) contrast(1.2) drop-shadow(0 0 4px rgba(180,0,0,.7)) !important;
+}
+.pc.ghost {
+  opacity: .35;
+}
+#ghost {
+  position: fixed;
+  pointer-events: none;
+  z-index: 999;
+  width: 60px;
+  height: 60px;
+  object-fit: contain;
+  filter: drop-shadow(2px 4px 6px rgba(0,0,0,.45));
+  display: none;
+  transform: translate(-50%, -50%);
+}
 #btns {
   display: flex;
   gap: 10px;
 }
-
 button {
   background: #2e4a3a;
   color: #ddd;
@@ -104,52 +101,40 @@ button {
   cursor: pointer;
   font-size: 14px;
 }
-
-button:hover {
-  background: #3a5c48;
-}
+button:hover { background: #3a5c48; }
 </style>
 </head>
 <body>
-
 <div id="board"></div>
-
 <div id="btns">
   <button id="reset">Reset</button>
   <button id="undo">Undo</button>
 </div>
+<img id="ghost" alt="">
 
 <script>
-// ============================================
-//  XADREZ - regras completas
-// ============================================
-
 const imgs = {
-  K: 'rei.png',
-  Q: 'rainha.png',
-  R: 'torre.png',
-  B: 'lado.png',
-  N: 'cavalo.png',
-  P: 'peça.png'
+  K: 'rei.png', Q: 'rainha.png', R: 'torre.png',
+  B: 'lado.png', N: 'cavalo.png', P: 'peça.png'
 };
 
-// tabuleiro: 0 = vazio, 'wP' = peão branco, 'bK' = rei preto, etc
 let board = [];
-let turn = 'w';          // 'w' ou 'b'
-let selected = null;     // {r, c} ou null
-let validMoves = [];     // lista de {r, c, ...}
-let lastMove = null;     // {from: {r,c}, to: {r,c}}
+let turn = 'w';
+let selected = null;
+let validMoves = [];
+let lastMove = null;
 let history = [];
 let gameOver = false;
-let enPassant = null;    // casa onde o peão pode ser capturado en passant
-let castling = {         // direitos de roque
-  wK: true, wQ: true,
-  bK: true, bQ: true
-};
+let enPassant = null;
+let castling = { wK: true, wQ: true, bK: true, bQ: true };
+
+let dragging = false;
+let dragFrom = null;
+let dragMoved = false;
 
 const boardEl = document.getElementById('board');
+const ghost = document.getElementById('ghost');
 
-// ---------- inicialização ----------
 function startGame() {
   board = [
     ['bR','bN','bB','bQ','bK','bB','bN','bR'],
@@ -169,387 +154,309 @@ function startGame() {
   gameOver = false;
   enPassant = null;
   castling = { wK: true, wQ: true, bK: true, bQ: true };
+  dragging = false;
+  dragFrom = null;
+  dragMoved = false;
+  ghost.style.display = 'none';
   drawBoard();
 }
 
-// ---------- desenhar tabuleiro ----------
 function drawBoard() {
   boardEl.innerHTML = '';
-
   for (let r = 0; r < 8; r++) {
     for (let c = 0; c < 8; c++) {
       const sq = document.createElement('div');
-      const isLight = (r + c) % 2 === 0;
-      sq.className = 'sq ' + (isLight ? 'l' : 'd');
+      sq.className = 'sq ' + ((r + c) % 2 === 0 ? 'l' : 'd');
+      sq.dataset.r = r;
+      sq.dataset.c = c;
 
-      // destaque da peça selecionada
-      if (selected && selected.r === r && selected.c === c) {
-        sq.classList.add('sel');
-      }
+      if (selected && selected.r === r && selected.c === c) sq.classList.add('sel');
+      if (lastMove && ((lastMove.from.r === r && lastMove.from.c === c) || (lastMove.to.r === r && lastMove.to.c === c)))
+        sq.classList.add('lm');
 
-      // última jogada
-      if (lastMove) {
-        if ((lastMove.from.r === r && lastMove.from.c === c) ||
-            (lastMove.to.r === r && lastMove.to.c === c)) {
-          sq.classList.add('lm');
-        }
-      }
-
-      // círculos de movimento válido
       const move = validMoves.find(m => m.r === r && m.c === c);
-      if (move) {
-        if (board[r][c]) {
-          sq.classList.add('vc'); // captura
-        } else {
-          sq.classList.add('vm'); // movimento normal (círculo branco)
-        }
-      }
+      if (move && !board[r][c]) sq.classList.add('vm');
 
-      // peça
       const piece = board[r][c];
       if (piece) {
         const img = document.createElement('img');
         img.src = imgs[piece[1]];
         img.className = 'pc' + (piece[0] === 'b' ? ' bk' : '');
+        if (move && board[r][c]) img.classList.add('danger');
+        if (dragging && dragFrom && dragFrom.r === r && dragFrom.c === c) img.classList.add('ghost');
         img.alt = piece;
         img.draggable = false;
         sq.appendChild(img);
       }
 
-      // clique
-      sq.addEventListener('click', function () {
-        onClick(r, c);
-      });
-
+      sq.addEventListener('mousedown', e => onMouseDown(e, r, c));
+      sq.addEventListener('click', e => onClick(e, r, c));
       boardEl.appendChild(sq);
     }
   }
 }
 
-// ---------- utilitários ----------
-function inBounds(r, c) {
-  return r >= 0 && r < 8 && c >= 0 && c < 8;
-}
+function inBounds(r, c) { return r >= 0 && r < 8 && c >= 0 && c < 8; }
+function isEnemy(p, col) { return p && p[0] !== col; }
+function isOwn(p, col) { return p && p[0] === col; }
+function cloneBoard(src) { return src.map(row => row.slice()); }
 
-function isEnemy(piece, color) {
-  return piece && piece[0] !== color;
-}
-
-function isOwn(piece, color) {
-  return piece && piece[0] === color;
-}
-
-function cloneBoard(src) {
-  return src.map(function (row) {
-    return row.slice();
-  });
-}
-
-// ---------- gerar movimentos de uma peça ----------
 function getMoves(r, c, ignoreCheck) {
   const piece = board[r][c];
   if (!piece) return [];
-
   const color = piece[0];
   const type = piece[1];
   const result = [];
 
-  // adiciona um destino se for válido
   function add(nr, nc) {
     if (!inBounds(nr, nc)) return false;
     if (isOwn(board[nr][nc], color)) return false;
     result.push({ r: nr, c: nc });
-    return !board[nr][nc]; // continua só se a casa estiver vazia
+    return !board[nr][nc];
   }
 
-  // ===== PEÃO =====
   if (type === 'P') {
-    const dir = (color === 'w') ? -1 : 1;
-    const startRank = (color === 'w') ? 6 : 1;
-
-    // andada 1 casa
+    const dir = color === 'w' ? -1 : 1;
+    const startRank = color === 'w' ? 6 : 1;
     if (inBounds(r + dir, c) && !board[r + dir][c]) {
       result.push({ r: r + dir, c: c });
-
-      // andada 2 casas (só na posição inicial)
-      if (r === startRank && !board[r + 2 * dir][c]) {
+      if (r === startRank && !board[r + 2 * dir][c])
         result.push({ r: r + 2 * dir, c: c });
-      }
     }
-
-    // capturas diagonais
     for (let dc = -1; dc <= 1; dc += 2) {
-      const nr = r + dir;
-      const nc = c + dc;
+      const nr = r + dir, nc = c + dc;
       if (inBounds(nr, nc)) {
-        if (isEnemy(board[nr][nc], color)) {
-          result.push({ r: nr, c: nc });
-        }
-        // en passant
-        if (enPassant && enPassant.r === nr && enPassant.c === nc) {
+        if (isEnemy(board[nr][nc], color)) result.push({ r: nr, c: nc });
+        if (enPassant && enPassant.r === nr && enPassant.c === nc)
           result.push({ r: nr, c: nc, enPassant: true });
-        }
       }
     }
-  }
-
-  // ===== CAVALO =====
-  else if (type === 'N') {
-    const jumps = [
-      [-2, -1], [-2, 1],
-      [-1, -2], [-1, 2],
-      [1, -2],  [1, 2],
-      [2, -1],  [2, 1]
-    ];
-    for (let i = 0; i < jumps.length; i++) {
-      add(r + jumps[i][0], c + jumps[i][1]);
-    }
-  }
-
-  // ===== BISPO / TORRE / RAINHA =====
-  else if (type === 'B' || type === 'R' || type === 'Q') {
+  } else if (type === 'N') {
+    [[-2,-1],[-2,1],[-1,-2],[-1,2],[1,-2],[1,2],[2,-1],[2,1]].forEach(([dr,dc]) => add(r+dr, c+dc));
+  } else if (type === 'B' || type === 'R' || type === 'Q') {
     const dirs = [];
-
-    // bispo e rainha: diagonais
-    if (type === 'B' || type === 'Q') {
-      dirs.push([-1, -1], [-1, 1], [1, -1], [1, 1]);
-    }
-    // torre e rainha: retos
-    if (type === 'R' || type === 'Q') {
-      dirs.push([-1, 0], [1, 0], [0, -1], [0, 1]);
-    }
-
-    for (let d = 0; d < dirs.length; d++) {
-      const dr = dirs[d][0];
-      const dc = dirs[d][1];
-      for (let step = 1; step < 8; step++) {
-        if (!add(r + dr * step, c + dc * step)) break;
-      }
-    }
-  }
-
-  // ===== REI =====
-  else if (type === 'K') {
-    for (let dr = -1; dr <= 1; dr++) {
-      for (let dc = -1; dc <= 1; dc++) {
-        if (dr === 0 && dc === 0) continue;
-        add(r + dr, c + dc);
-      }
-    }
-
-    // roque (só se não estivermos só calculando ataques)
-    if (!ignoreCheck) {
-      // branco
-      if (color === 'w' && r === 7 && c === 4) {
-        // roque curto (lado do rei)
-        if (castling.wK &&
-            !board[7][5] && !board[7][6] &&
-            board[7][7] === 'wR' &&
-            !isAttacked(7, 4, 'b') &&
-            !isAttacked(7, 5, 'b') &&
-            !isAttacked(7, 6, 'b')) {
-          result.push({ r: 7, c: 6, castle: 'K' });
-        }
-        // roque longo (lado da dama)
-        if (castling.wQ &&
-            !board[7][1] && !board[7][2] && !board[7][3] &&
-            board[7][0] === 'wR' &&
-            !isAttacked(7, 4, 'b') &&
-            !isAttacked(7, 3, 'b') &&
-            !isAttacked(7, 2, 'b')) {
-          result.push({ r: 7, c: 2, castle: 'Q' });
-        }
-      }
-      // preto
-      if (color === 'b' && r === 0 && c === 4) {
-        if (castling.bK &&
-            !board[0][5] && !board[0][6] &&
-            board[0][7] === 'bR' &&
-            !isAttacked(0, 4, 'w') &&
-            !isAttacked(0, 5, 'w') &&
-            !isAttacked(0, 6, 'w')) {
-          result.push({ r: 0, c: 6, castle: 'K' });
-        }
-        if (castling.bQ &&
-            !board[0][1] && !board[0][2] && !board[0][3] &&
-            board[0][0] === 'bR' &&
-            !isAttacked(0, 4, 'w') &&
-            !isAttacked(0, 3, 'w') &&
-            !isAttacked(0, 2, 'w')) {
-          result.push({ r: 0, c: 2, castle: 'Q' });
-        }
-      }
-    }
-  }
-
-  // filtra movimentos que deixariam o próprio rei em xeque
-  if (!ignoreCheck) {
-    return result.filter(function (m) {
-      return !wouldBeInCheck(r, c, m, color);
+    if (type === 'B' || type === 'Q') dirs.push([-1,-1],[-1,1],[1,-1],[1,1]);
+    if (type === 'R' || type === 'Q') dirs.push([-1,0],[1,0],[0,-1],[0,1]);
+    dirs.forEach(([dr,dc]) => {
+      for (let step = 1; step < 8; step++)
+        if (!add(r + dr*step, c + dc*step)) break;
     });
+  } else if (type === 'K') {
+    for (let dr = -1; dr <= 1; dr++)
+      for (let dc = -1; dc <= 1; dc++)
+        if (dr || dc) add(r+dr, c+dc);
+
+    if (!ignoreCheck) {
+      if (color === 'w' && r === 7 && c === 4) {
+        if (castling.wK && !board[7][5] && !board[7][6] && board[7][7] === 'wR' &&
+            !isAttacked(7,4,'b') && !isAttacked(7,5,'b') && !isAttacked(7,6,'b'))
+          result.push({ r:7, c:6, castle:'K' });
+        if (castling.wQ && !board[7][1] && !board[7][2] && !board[7][3] && board[7][0] === 'wR' &&
+            !isAttacked(7,4,'b') && !isAttacked(7,3,'b') && !isAttacked(7,2,'b'))
+          result.push({ r:7, c:2, castle:'Q' });
+      }
+      if (color === 'b' && r === 0 && c === 4) {
+        if (castling.bK && !board[0][5] && !board[0][6] && board[0][7] === 'bR' &&
+            !isAttacked(0,4,'w') && !isAttacked(0,5,'w') && !isAttacked(0,6,'w'))
+          result.push({ r:0, c:6, castle:'K' });
+        if (castling.bQ && !board[0][1] && !board[0][2] && !board[0][3] && board[0][0] === 'bR' &&
+            !isAttacked(0,4,'w') && !isAttacked(0,3,'w') && !isAttacked(0,2,'w'))
+          result.push({ r:0, c:2, castle:'Q' });
+      }
+    }
   }
+
+  if (!ignoreCheck) return result.filter(m => !wouldBeInCheck(r, c, m, color));
   return result;
 }
 
-// ---------- verifica se uma casa está atacada por uma cor ----------
 function isAttacked(r, c, byColor) {
   for (let i = 0; i < 8; i++) {
     for (let j = 0; j < 8; j++) {
       const p = board[i][j];
       if (!p || p[0] !== byColor) continue;
-      const attacks = getMoves(i, j, true); // true = ignora xeque (evita loop)
-      for (let k = 0; k < attacks.length; k++) {
+      const attacks = getMoves(i, j, true);
+      for (let k = 0; k < attacks.length; k++)
         if (attacks[k].r === r && attacks[k].c === c) return true;
-      }
     }
   }
   return false;
 }
 
-// ---------- encontra o rei de uma cor ----------
 function findKing(color) {
-  for (let r = 0; r < 8; r++) {
-    for (let c = 0; c < 8; c++) {
-      if (board[r][c] === color + 'K') {
-        return { r: r, c: c };
-      }
-    }
-  }
+  for (let r = 0; r < 8; r++)
+    for (let c = 0; c < 8; c++)
+      if (board[r][c] === color + 'K') return { r, c };
   return null;
 }
 
-// ---------- simula o movimento e vê se o rei fica em xeque ----------
 function wouldBeInCheck(fromR, fromC, move, color) {
-  // salva estado
   const savedTarget = board[move.r][move.c];
   const piece = board[fromR][fromC];
-
-  // faz o movimento
   board[move.r][move.c] = piece;
   board[fromR][fromC] = 0;
 
-  // en passant
   let epCaptured = null;
   if (move.enPassant) {
-    const dir = (color === 'w') ? 1 : -1;
+    const dir = color === 'w' ? 1 : -1;
     epCaptured = board[move.r + dir][move.c];
     board[move.r + dir][move.c] = 0;
   }
 
-  // roque (move a torre também)
   let rookFrom = null, rookTo = null, rookPiece = null;
   if (move.castle) {
-    if (move.castle === 'K') {
-      rookFrom = { r: fromR, c: 7 };
-      rookTo   = { r: fromR, c: 5 };
-    } else {
-      rookFrom = { r: fromR, c: 0 };
-      rookTo   = { r: fromR, c: 3 };
-    }
+    if (move.castle === 'K') { rookFrom = { r: fromR, c: 7 }; rookTo = { r: fromR, c: 5 }; }
+    else { rookFrom = { r: fromR, c: 0 }; rookTo = { r: fromR, c: 3 }; }
     rookPiece = board[rookFrom.r][rookFrom.c];
     board[rookTo.r][rookTo.c] = rookPiece;
     board[rookFrom.r][rookFrom.c] = 0;
   }
 
-  // verifica
   const king = findKing(color);
   const inCheck = king && isAttacked(king.r, king.c, color === 'w' ? 'b' : 'w');
 
-  // desfaz tudo
   board[fromR][fromC] = piece;
   board[move.r][move.c] = savedTarget;
   if (epCaptured !== null) {
-    const dir = (color === 'w') ? 1 : -1;
+    const dir = color === 'w' ? 1 : -1;
     board[move.r + dir][move.c] = epCaptured;
   }
   if (rookFrom) {
     board[rookFrom.r][rookFrom.c] = rookPiece;
     board[rookTo.r][rookTo.c] = 0;
   }
-
   return inCheck;
 }
 
-// ---------- clique em uma casa ----------
-function onClick(r, c) {
+function onMouseDown(e, r, c) {
+  if (gameOver || e.button !== 0) return;
+  const piece = board[r][c];
+  if (!isOwn(piece, turn)) return;
+
+  e.preventDefault();
+  dragging = true;
+  dragFrom = { r, c };
+  dragMoved = false;
+
+  selected = { r, c };
+  validMoves = getMoves(r, c);
+
+  const size = boardEl.offsetWidth / 8;
+  ghost.src = imgs[piece[1]];
+  ghost.style.width = size * 0.85 + 'px';
+  ghost.style.height = size * 0.85 + 'px';
+  if (piece[0] === 'b') {
+    ghost.style.filter = 'brightness(.2) contrast(1.15) drop-shadow(2px 4px 6px rgba(0,0,0,.45))';
+  } else {
+    ghost.style.filter = 'drop-shadow(2px 4px 6px rgba(0,0,0,.45))';
+  }
+  ghost.style.left = e.clientX + 'px';
+  ghost.style.top = e.clientY + 'px';
+  ghost.style.display = 'block';
+
+  drawBoard();
+}
+
+function onClick(e, r, c) {
+  if (dragMoved) return;
   if (gameOver) return;
 
   const piece = board[r][c];
 
-  // já tem peça selecionada
   if (selected) {
-    // clicou em um destino válido → move
-    const move = validMoves.find(function (m) {
-      return m.r === r && m.c === c;
-    });
+    const move = validMoves.find(m => m.r === r && m.c === c);
     if (move) {
       makeMove(selected.r, selected.c, move);
       return;
     }
-
-    // clicou na mesma peça → desmarca
     if (selected.r === r && selected.c === c) {
       selected = null;
       validMoves = [];
       drawBoard();
       return;
     }
-
-    // clicou em outra peça da mesma cor → seleciona ela
     if (isOwn(piece, turn)) {
-      selected = { r: r, c: c };
+      selected = { r, c };
       validMoves = getMoves(r, c);
       drawBoard();
       return;
     }
-
-    // clicou em lugar inválido → desmarca
     selected = null;
     validMoves = [];
     drawBoard();
     return;
   }
 
-  // nenhuma selecionada → seleciona se for peça do turno
   if (isOwn(piece, turn)) {
-    selected = { r: r, c: c };
+    selected = { r, c };
     validMoves = getMoves(r, c);
     drawBoard();
   }
 }
 
-// ---------- executa o movimento ----------
+document.addEventListener('mousemove', e => {
+  if (!dragging) return;
+  dragMoved = true;
+  ghost.style.left = e.clientX + 'px';
+  ghost.style.top = e.clientY + 'px';
+});
+
+document.addEventListener('mouseup', e => {
+  if (!dragging) return;
+
+  const wasDrag = dragMoved;
+  const from = dragFrom;
+  dragging = false;
+  dragFrom = null;
+  ghost.style.display = 'none';
+
+  if (!wasDrag) {
+    drawBoard();
+    return;
+  }
+
+  const rect = boardEl.getBoundingClientRect();
+  const size = rect.width / 8;
+  const c = Math.floor((e.clientX - rect.left) / size);
+  const r = Math.floor((e.clientY - rect.top) / size);
+
+  if (inBounds(r, c)) {
+    const move = validMoves.find(m => m.r === r && m.c === c);
+    if (move) {
+      makeMove(from.r, from.c, move);
+      return;
+    }
+  }
+
+  selected = null;
+  validMoves = [];
+  drawBoard();
+});
+
 function makeMove(fromR, fromC, move) {
-  // guarda histórico pro undo
   history.push({
     board: cloneBoard(board),
-    turn: turn,
+    turn,
     enPassant: enPassant ? { r: enPassant.r, c: enPassant.c } : null,
-    castling: {
-      wK: castling.wK, wQ: castling.wQ,
-      bK: castling.bK, bQ: castling.bQ
-    },
+    castling: { wK: castling.wK, wQ: castling.wQ, bK: castling.bK, bQ: castling.bQ },
     lastMove: lastMove ? {
       from: { r: lastMove.from.r, c: lastMove.from.c },
-      to:   { r: lastMove.to.r,   c: lastMove.to.c }
+      to: { r: lastMove.to.r, c: lastMove.to.c }
     } : null
   });
 
   const piece = board[fromR][fromC];
   const color = piece[0];
-  const type  = piece[1];
+  const type = piece[1];
 
-  // en passant: remove o peão capturado
   if (move.enPassant) {
-    const dir = (color === 'w') ? 1 : -1;
+    const dir = color === 'w' ? 1 : -1;
     board[move.r + dir][move.c] = 0;
   }
 
-  // move a peça
   board[move.r][move.c] = piece;
   board[fromR][fromC] = 0;
 
-  // roque: move a torre também
   if (move.castle) {
     if (move.castle === 'K') {
       board[fromR][5] = board[fromR][7];
@@ -560,15 +467,9 @@ function makeMove(fromR, fromC, move) {
     }
   }
 
-  // atualiza direitos de roque
   if (type === 'K') {
-    if (color === 'w') {
-      castling.wK = false;
-      castling.wQ = false;
-    } else {
-      castling.bK = false;
-      castling.bQ = false;
-    }
+    if (color === 'w') { castling.wK = false; castling.wQ = false; }
+    else { castling.bK = false; castling.bQ = false; }
   }
   if (type === 'R') {
     if (fromR === 7 && fromC === 0) castling.wQ = false;
@@ -576,74 +477,41 @@ function makeMove(fromR, fromC, move) {
     if (fromR === 0 && fromC === 0) castling.bQ = false;
     if (fromR === 0 && fromC === 7) castling.bK = false;
   }
-  // se capturou uma torre, também perde o direito
   if (move.r === 7 && move.c === 0) castling.wQ = false;
   if (move.r === 7 && move.c === 7) castling.wK = false;
   if (move.r === 0 && move.c === 0) castling.bQ = false;
   if (move.r === 0 && move.c === 7) castling.bK = false;
 
-  // define en passant (se o peão andou 2 casas)
   enPassant = null;
-  if (type === 'P' && Math.abs(move.r - fromR) === 2) {
-    enPassant = {
-      r: (fromR + move.r) / 2,
-      c: fromC
-    };
-  }
+  if (type === 'P' && Math.abs(move.r - fromR) === 2)
+    enPassant = { r: (fromR + move.r) / 2, c: fromC };
 
-  // promoção: peão vira rainha ao chegar no final
-  if (type === 'P' && (move.r === 0 || move.r === 7)) {
+  if (type === 'P' && (move.r === 0 || move.r === 7))
     board[move.r][move.c] = color + 'Q';
-  }
 
-  // atualiza última jogada
-  lastMove = {
-    from: { r: fromR, c: fromC },
-    to:   { r: move.r, c: move.c }
-  };
-
-  // limpa seleção e troca o turno
+  lastMove = { from: { r: fromR, c: fromC }, to: { r: move.r, c: move.c } };
   selected = null;
   validMoves = [];
-  turn = (turn === 'w') ? 'b' : 'w';
+  turn = turn === 'w' ? 'b' : 'w';
 
-  // verifica se acabou o jogo
   checkGameOver();
   drawBoard();
 }
 
-// ---------- xeque / xeque-mate / afogamento ----------
 function checkGameOver() {
   const king = findKing(turn);
-  if (!king) {
-    gameOver = true;
-    return;
-  }
-
-  const inCheck = isAttacked(king.r, king.c, turn === 'w' ? 'b' : 'w');
-
-  // tem algum movimento legal?
+  if (!king) { gameOver = true; return; }
   let hasLegal = false;
-  for (let r = 0; r < 8 && !hasLegal; r++) {
-    for (let c = 0; c < 8 && !hasLegal; c++) {
-      if (isOwn(board[r][c], turn)) {
-        if (getMoves(r, c).length > 0) {
-          hasLegal = true;
-        }
-      }
-    }
-  }
-
-  if (!hasLegal) {
-    gameOver = true;
-  }
+  for (let r = 0; r < 8 && !hasLegal; r++)
+    for (let c = 0; c < 8 && !hasLegal; c++)
+      if (isOwn(board[r][c], turn) && getMoves(r, c).length > 0)
+        hasLegal = true;
+  if (!hasLegal) gameOver = true;
 }
 
-// ---------- botões ----------
 document.getElementById('reset').addEventListener('click', startGame);
-
-document.getElementById('undo').addEventListener('click', function () {
-  if (history.length === 0) return;
+document.getElementById('undo').addEventListener('click', () => {
+  if (!history.length) return;
   const prev = history.pop();
   board = prev.board;
   turn = prev.turn;
@@ -653,10 +521,11 @@ document.getElementById('undo').addEventListener('click', function () {
   selected = null;
   validMoves = [];
   gameOver = false;
+  dragging = false;
+  ghost.style.display = 'none';
   drawBoard();
 });
 
-// começa o jogo
 startGame();
 </script>
 </body>
